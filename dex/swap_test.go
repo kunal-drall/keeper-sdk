@@ -2,8 +2,10 @@ package dex
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stellar/go/keypair"
@@ -108,6 +110,43 @@ func TestSwapToUSDC_SlippageRejected(t *testing.T) {
 	_, err := c.SwapToUSDC(mustKP(t), testToken, 1_000_000_000, 1_000_000_000)
 	if !errors.Is(err, ErrSlippageExceeded) {
 		t.Fatalf("expected ErrSlippageExceeded, got %v", err)
+	}
+}
+
+// Phoenix has no pre-trade quote, so without an oracle reference the swap
+// would execute with minOut=0 — zero price protection. It must refuse instead.
+func TestPhoenix_RefusesUnprotectedSwap(t *testing.T) {
+	cfg := baseCfg()
+	cfg.SoroswapRouter = "" // force the Phoenix path
+	cfg.PhoenixRouter = testPhx
+	c := NewSwapClient(soroban.NewClient("http://invalid.local"), cfg)
+
+	_, err := c.SwapToUSDC(mustKP(t), testToken, 1_000_000, 0) // no reference value
+	if !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected ErrNoRoute wrapper, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unprotected") {
+		t.Fatalf("expected unprotected-swap refusal (and no network call), got %v", err)
+	}
+}
+
+// i128 quote values outside int64 must saturate, not truncate (truncation can
+// flip the sign and corrupt min-out math).
+func TestScI128_Saturates(t *testing.T) {
+	i128 := func(hi int64, lo uint64) xdr.ScVal {
+		return xdr.ScVal{Type: xdr.ScValTypeScvI128, I128: &xdr.Int128Parts{Hi: xdr.Int64(hi), Lo: xdr.Uint64(lo)}}
+	}
+	if got := scI128(i128(1, 0)); got != math.MaxInt64 {
+		t.Errorf("hi=1 should saturate to MaxInt64, got %d", got)
+	}
+	if got := scI128(i128(0, math.MaxInt64+1)); got != math.MaxInt64 {
+		t.Errorf("lo > MaxInt64 should saturate, got %d", got)
+	}
+	if got := scI128(i128(-1, math.MaxUint64)); got != -1 {
+		t.Errorf("-1 should decode exactly, got %d", got)
+	}
+	if got := scI128(i128(-2, 0)); got != math.MinInt64 {
+		t.Errorf("very negative should saturate to MinInt64, got %d", got)
 	}
 }
 

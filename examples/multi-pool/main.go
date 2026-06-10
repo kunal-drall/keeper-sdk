@@ -8,9 +8,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	sdk "github.com/Nectar-Network/keeper-sdk"
 	"github.com/Nectar-Network/keeper-sdk/adapters/blend"
@@ -49,7 +53,9 @@ func main() {
 		}, dexc))
 	}
 
-	if err := k.Run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := k.RunContext(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
 }

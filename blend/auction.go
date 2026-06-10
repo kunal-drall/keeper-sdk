@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strings"
 
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/xdr"
@@ -251,26 +252,48 @@ func PhaseAt(elapsed int64) (AuctionPhase, float64, float64) {
 // math is identical across the three auction kinds — the only difference is
 // what the lot/bid maps contain (collateral vs. backstop interest vs. bad
 // debt), which the caller has already populated by the time this runs.
+//
+// Pricing: with oracle prices loaded, legs are valued in USD. On a fully
+// unpriced pool (no oracle) every asset is valued at parity, i.e. a pure
+// amount ratio. If the bid contains an asset that cannot be valued while
+// others can, the cost is unknown and Profitability returns 0 — an unknown
+// cost is never treated as free money.
 func Profitability(auction Auction, pool *PoolState, currentBlock int64) float64 {
 	elapsed := currentBlock - auction.StartBlock
 	_, lotPct, bidPct := PhaseAt(elapsed)
 
 	var lotVal, bidVal float64
+	unpricedBid := false
 	for asset, amt := range auction.Lot {
 		r, ok := pool.Reserves[asset]
-		if !ok {
+		if !ok || amt == nil {
 			continue
 		}
+		p := effectivePrice(pool, r)
+		if p <= 0 {
+			continue // unpriced lot asset adds no value — conservative
+		}
 		f, _ := new(big.Float).SetInt(amt).Float64()
-		lotVal += (f / scalar) * lotPct * r.OraclePrice
+		lotVal += (f / scalar) * lotPct * p
 	}
 	for asset, amt := range auction.Bid {
+		if amt == nil || amt.Sign() <= 0 {
+			continue
+		}
 		r, ok := pool.Reserves[asset]
-		if !ok {
+		p := 0.0
+		if ok {
+			p = effectivePrice(pool, r)
+		}
+		if p <= 0 {
+			unpricedBid = true
 			continue
 		}
 		f, _ := new(big.Float).SetInt(amt).Float64()
-		bidVal += (f / scalar) * bidPct * r.OraclePrice
+		bidVal += (f / scalar) * bidPct * p
+	}
+	if unpricedBid {
+		return 0
 	}
 	if bidVal == 0 {
 		return math.Inf(1)
@@ -278,18 +301,23 @@ func Profitability(auction Auction, pool *PoolState, currentBlock int64) float64
 	return lotVal / bidVal
 }
 
-// BidValueUSD totals the bid leg's USD value at the current scaling.
+// BidValueUSD totals the bid leg's USD value at the current scaling. On a
+// fully unpriced pool assets are valued at parity (see Profitability).
 func BidValueUSD(auction Auction, pool *PoolState, currentBlock int64) float64 {
 	elapsed := currentBlock - auction.StartBlock
 	_, _, bidPct := PhaseAt(elapsed)
 	var v float64
 	for asset, amt := range auction.Bid {
 		r, ok := pool.Reserves[asset]
-		if !ok {
+		if !ok || amt == nil {
+			continue
+		}
+		p := effectivePrice(pool, r)
+		if p <= 0 {
 			continue
 		}
 		f, _ := new(big.Float).SetInt(amt).Float64()
-		v += (f / scalar) * bidPct * r.OraclePrice
+		v += (f / scalar) * bidPct * p
 	}
 	return v
 }
@@ -344,11 +372,4 @@ func isAuctionExists(s string) bool {
 	return contains(s, "AuctionExists") || contains(s, "#5")
 }
 
-func contains(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
+func contains(s, sub string) bool { return strings.Contains(s, sub) }

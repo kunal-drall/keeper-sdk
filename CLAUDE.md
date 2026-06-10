@@ -6,7 +6,7 @@ monorepo's `keeper/` during Tranche 2 (Phase 4). Third-party operators import
 this to run their own keepers.
 
 ## Layout
-- `keeper.go` / `config.go` — public API: `Keeper`, `NewKeeper`, `AddAdapter`, `Run`, `Config`, `LoadConfig`
+- `keeper.go` / `config.go` — public API: `Keeper`, `NewKeeper`, `AddAdapter`, `Run`/`RunContext`, `EnsureRegistered`, `Config`, `LoadConfig`/`LoadConfigFromEnv`, `Config.Validate`
 - `adapters/` — `ProtocolAdapter` interface + `Task` / `Result` / `VaultClient`
 - `adapters/blend/` — reference Blend liquidation adapter
 - `dex/` — Soroswap (+ Phoenix fallback) collateral → USDC conversion
@@ -18,7 +18,7 @@ this to run their own keepers.
 ## Conventions
 - Go 1.24; `gofmt`; `go vet` clean; no external deps beyond `github.com/stellar/go`.
 - Adapters are libraries: **no logging**, return errors/values; the `Keeper` logs (`log/slog`).
-- Reads via `SimulateRead`; state-changing calls via `rpc.Invoke`, **never auto-retried** (a re-broadcast could double-execute).
+- Reads via `SimulateRead`; state-changing calls via `rpc.Invoke`. Retries (`InvokeWithRetry`) only fire on pre-broadcast failures; `soroban.ErrTxStatusUnknown` (sent but unconfirmed) is **never retried** — a re-broadcast could double-execute. Recovery happens next cycle.
 - Amounts are i128 in 7-decimal stroops (1 unit = 1e7).
 - Every exported symbol has a GoDoc comment (this is a public SDK).
 

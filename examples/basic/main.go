@@ -7,7 +7,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	sdk "github.com/Nectar-Network/keeper-sdk"
 	"github.com/Nectar-Network/keeper-sdk/adapters/blend"
@@ -30,7 +35,11 @@ func main() {
 		UsdcAddr:   cfg.UsdcAddr,
 	}, nil))
 
-	if err := k.Run(); err != nil {
+	// Stop cleanly on Ctrl-C / SIGTERM: the current cycle finishes first so no
+	// task is abandoned with vault capital outstanding.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := k.RunContext(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
 }

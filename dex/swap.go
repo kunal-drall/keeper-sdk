@@ -8,6 +8,7 @@ package dex
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -183,11 +184,22 @@ func addressVec(addrs []string) (xdr.ScVal, error) {
 	return soroban.ScvVec(vals...), nil
 }
 
-// scI128 decodes a single i128 ScVal to int64 (low 64 bits). 7-decimal amounts
-// in this protocol stay well within int64.
+// scI128 decodes a single i128 ScVal to int64, saturating at the int64 bounds
+// rather than truncating to the low 64 bits (truncation could flip the sign of
+// a huge value). 7-decimal amounts in this protocol stay well within int64.
 func scI128(val xdr.ScVal) int64 {
 	if val.Type != xdr.ScValTypeScvI128 || val.I128 == nil {
 		return 0
 	}
-	return int64(val.I128.Lo)
+	hi, lo := int64(val.I128.Hi), uint64(val.I128.Lo)
+	switch {
+	case hi == 0 && lo <= math.MaxInt64:
+		return int64(lo)
+	case hi == -1 && lo > math.MaxInt64:
+		return int64(lo) // small negative value, two's complement
+	case hi >= 0:
+		return math.MaxInt64
+	default:
+		return math.MinInt64
+	}
 }

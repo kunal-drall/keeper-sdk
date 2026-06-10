@@ -1,6 +1,7 @@
 package soroban
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -21,9 +22,14 @@ func DefaultRetry() RetryConfig {
 }
 
 // isRetryable reports whether the err is worth retrying. Transient sequence /
-// fee / resource issues retry; deterministic contract failures do not.
+// fee / resource issues retry; deterministic contract failures do not. A
+// transaction whose fate is unknown (ErrTxStatusUnknown) is NEVER retryable:
+// it was already broadcast and may still land, so a retry could double-execute.
 func isRetryable(err error) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrTxStatusUnknown) {
 		return false
 	}
 	s := strings.ToLower(err.Error())
@@ -39,6 +45,7 @@ func isRetryable(err error) bool {
 		"contract panic",
 		"unauthorized",
 		"already registered",
+		"status unknown",
 	}
 	for _, sub := range nonRetryable {
 		if strings.Contains(s, sub) {
@@ -46,28 +53,41 @@ func isRetryable(err error) bool {
 		}
 	}
 
-	// Soft "yes" — transient infra/network issues.
+	// Soft "yes" — transient infra/network issues that occur BEFORE a
+	// transaction is accepted, plus definitive in-ledger failures whose result
+	// code is known to be transient. Both snake_case strings and decoded XDR
+	// code names (e.g. TransactionResultCodeTxBadSeq) are matched.
 	retryable := []string{
-		"tx_too_late",
-		"tx_insufficient_fee",
-		"resource_exhaust",
+		"tx_too_late", "txtoolate",
+		"tx_insufficient_fee", "txinsufficientfee",
+		"tx_bad_seq", "txbadseq", "sequence",
+		"resource_exhaust", "resourcelimitexceeded",
+		"try_again_later",
 		"timeout",
 		"timed out",
 		"connection reset",
 		"connection refused",
-		"eof",
-		"sequence",
+		"unexpected eof",
 	}
 	for _, sub := range retryable {
 		if strings.Contains(s, sub) {
 			return true
 		}
 	}
+	// io.EOF prints exactly "EOF" and usually arrives wrapped as "...: EOF".
+	// Matched precisely (not as a bare substring) because base64 XDR payloads
+	// in error text can contain "eof" by coincidence.
+	if s == "eof" || strings.HasSuffix(s, ": eof") {
+		return true
+	}
 	return false
 }
 
 // InvokeWithRetry wraps Invoke with exponential backoff. On a non-retryable
-// error or after MaxAttempts, the last error is returned.
+// error or after MaxAttempts, the last error is returned. Only failures that
+// happen before the transaction is accepted (or that are definitively final
+// in-ledger) are retried; an ErrTxStatusUnknown is returned immediately so an
+// in-flight transaction is never re-broadcast.
 func (c *Client) InvokeWithRetry(
 	horizonURL string,
 	kp *keypair.Full,

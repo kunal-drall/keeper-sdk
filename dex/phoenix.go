@@ -14,9 +14,12 @@ import (
 // PhoenixRouter config (set to the XYK pool/pair contract for the
 // collateral/USDC pair) and used only when Soroswap is unavailable.
 func (s *SwapClient) swapViaPhoenix(kp *keypair.Full, tokenAddr string, amount, refValueUSDC int64) (*SwapResult, error) {
-	minOut := int64(0)
-	if refValueUSDC > 0 {
-		minOut = minOutForSlippage(refValueUSDC, s.cfg.SlippageBps)
+	// Phoenix has no pre-trade quote here, so the oracle reference is the only
+	// price anchor. Without it minOut would be 0 — a completely unprotected
+	// swap that a sandwich bot could drain — so refuse instead of executing.
+	minOut := minOutForSlippage(refValueUSDC, s.cfg.SlippageBps)
+	if minOut <= 0 {
+		return nil, fmt.Errorf("no oracle reference value for %s — refusing unprotected swap", tokenAddr)
 	}
 
 	before, err := TokenBalance(s.rpc, s.cfg.Passphrase, s.cfg.UsdcAddr, kp.Address())

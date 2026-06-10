@@ -3,6 +3,7 @@ package soroban
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/network"
@@ -11,20 +12,32 @@ import (
 	"github.com/stellar/go/xdr"
 )
 
-// Invoke builds, simulates, assembles, signs, sends, and awaits a contract call.
+// txTimeoutSecs is the signed transaction's time bound; awaitTxTimeout is how
+// long Invoke polls for the result. The await window deliberately exceeds the
+// time bound plus a ledger-close margin so an unconfirmed transaction has
+// expired (and can no longer land) by the time Invoke gives up on it.
+const (
+	txTimeoutSecs  = 30
+	awaitTxTimeout = 45 * time.Second
+)
+
+// Invoke builds, simulates, assembles, signs, sends, and awaits a contract
+// call. Failures before Send are safe to retry; an ErrTxStatusUnknown from the
+// await phase is not (the transaction may still land) — InvokeWithRetry
+// honours this automatically.
 func (c *Client) Invoke(horizonURL string, kp *keypair.Full, passphrase, contractID, fn string, args ...xdr.ScVal) (*TxResult, error) {
 	seq, err := c.GetAccount(horizonURL, kp.Address())
 	if err != nil {
 		return nil, fmt.Errorf("get account seq: %w", err)
 	}
 
-	txXDR, err := buildTx(contractID, fn, args, kp.Address(), seq+1, passphrase, nil)
+	txXDR, err := buildTx(contractID, fn, args, kp.Address(), seq+1, passphrase)
 	if err != nil {
 		return nil, err
 	}
 	sim, err := c.Simulate(txXDR)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s simulate: %w", fn, err)
 	}
 	if sim.Error != "" {
 		return nil, fmt.Errorf("%s sim: %s", fn, sim.Error)
@@ -38,20 +51,23 @@ func (c *Client) Invoke(horizonURL string, kp *keypair.Full, passphrase, contrac
 	if err != nil {
 		return nil, err
 	}
-	return c.AwaitTx(hash, 30*1e9) // 30s
+	return c.AwaitTx(hash, awaitTxTimeout)
 }
 
 // SimulateRead calls simulateTransaction for read-only functions (no signing).
 func (c *Client) SimulateRead(passphrase, contractID, fn string, args ...xdr.ScVal) (*SimulateResult, error) {
-	dummyKP, _ := keypair.Random()
-	txXDR, err := buildTx(contractID, fn, args, dummyKP.Address(), 0, passphrase, nil)
+	dummyKP, err := keypair.Random()
+	if err != nil {
+		return nil, fmt.Errorf("generate sim keypair: %w", err)
+	}
+	txXDR, err := buildTx(contractID, fn, args, dummyKP.Address(), 0, passphrase)
 	if err != nil {
 		return nil, err
 	}
 	return c.Simulate(txXDR)
 }
 
-func buildTx(contractID, fn string, args []xdr.ScVal, source string, seq int64, passphrase string, sim *SimulateResult) (string, error) {
+func buildTx(contractID, fn string, args []xdr.ScVal, source string, seq int64, passphrase string) (string, error) {
 	contractAddr, err := contractScAddress(contractID)
 	if err != nil {
 		return "", err
@@ -117,14 +133,17 @@ func assembleAndSign(contractID, fn string, args []xdr.ScVal, kp *keypair.Full, 
 		Auth: authEntries,
 	}
 
-	minFee, _ := strconv.ParseInt(sim.MinResourceFee, 10, 64)
+	minFee, err := strconv.ParseInt(sim.MinResourceFee, 10, 64)
+	if err != nil || minFee < 0 {
+		return "", fmt.Errorf("%s: simulation returned invalid minResourceFee %q", fn, sim.MinResourceFee)
+	}
 	acct := txnbuild.SimpleAccount{AccountID: kp.Address(), Sequence: seq}
 	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
 		SourceAccount:        &acct,
 		IncrementSequenceNum: false,
 		Operations:           []txnbuild.Operation{op},
 		BaseFee:              txnbuild.MinBaseFee + minFee,
-		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(30)},
+		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(txTimeoutSecs)},
 	})
 	if err != nil {
 		return "", err
@@ -139,6 +158,9 @@ func assembleAndSign(contractID, fn string, args []xdr.ScVal, kp *keypair.Full, 
 		return "", err
 	}
 
+	if sim.TransactionData == "" {
+		return "", fmt.Errorf("%s: simulation returned no transaction data (wrong contract or function?)", fn)
+	}
 	var sorobanData xdr.SorobanTransactionData
 	if err := xdr.SafeUnmarshalBase64(sim.TransactionData, &sorobanData); err != nil {
 		return "", fmt.Errorf("parse soroban data: %w", err)

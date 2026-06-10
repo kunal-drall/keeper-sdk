@@ -32,7 +32,12 @@ export SOROSWAP_ROUTER=C...          # optional: enables collateral -> USDC swap
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	sdk "github.com/Nectar-Network/keeper-sdk"
 	"github.com/Nectar-Network/keeper-sdk/adapters/blend"
@@ -51,7 +56,11 @@ func main() {
 		Passphrase: cfg.Passphrase,
 		UsdcAddr:   cfg.UsdcAddr,
 	}, nil))
-	if err := k.Run(); err != nil {
+
+	// Graceful shutdown: the in-flight cycle finishes before the keeper stops.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := k.RunContext(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
 }
@@ -65,7 +74,7 @@ go run .
 
 | Package | What it does |
 |---|---|
-| (root) | `Keeper`, `NewKeeper`, `AddAdapter`, `Run`, `Config`/`LoadConfig` |
+| (root) | `Keeper`, `NewKeeper`, `AddAdapter`, `Run`/`RunContext`, `EnsureRegistered`, `Config`/`LoadConfig`/`LoadConfigFromEnv` |
 | `adapters` | `ProtocolAdapter` interface + `Task`/`Result`/`VaultClient` |
 | `adapters/blend` | Reference Blend liquidation adapter |
 | `dex` | Soroswap (+ Phoenix fallback) collateral → USDC conversion |

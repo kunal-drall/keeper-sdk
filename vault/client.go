@@ -2,6 +2,7 @@ package vault
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 	"time"
 
@@ -184,11 +185,22 @@ func scSymbol(val xdr.ScVal) string {
 	return ""
 }
 
+// scI128 decodes an i128 ScVal to int64, saturating at the int64 bounds rather
+// than truncating to the low 64 bits (which could silently flip the sign of an
+// adversarial or corrupt value). Protocol amounts in 7-decimal stroops fit
+// comfortably in int64.
 func scI128(val xdr.ScVal) int64 {
-	if val.Type != xdr.ScValTypeScvI128 || val.I128 == nil {
+	b := scI128Big(val)
+	if b == nil {
 		return 0
 	}
-	return int64(val.I128.Lo)
+	if !b.IsInt64() {
+		if b.Sign() > 0 {
+			return math.MaxInt64
+		}
+		return math.MinInt64
+	}
+	return b.Int64()
 }
 
 func scI128Big(val xdr.ScVal) *big.Int {

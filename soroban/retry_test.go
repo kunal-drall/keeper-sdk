@@ -2,6 +2,7 @@ package soroban
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -44,6 +45,45 @@ func TestIsRetryable_Deterministic(t *testing.T) {
 func TestIsRetryable_Nil(t *testing.T) {
 	if IsRetryable(nil) {
 		t.Fatal("nil error should not be retryable")
+	}
+}
+
+// A transaction with an unknown fate was already broadcast; retrying could
+// double-execute (double draw / double fill). This is the SDK's core
+// transaction-safety invariant.
+func TestIsRetryable_StatusUnknownNeverRetries(t *testing.T) {
+	wrapped := fmt.Errorf("vault draw: tx cafebabe: %w after 45s", ErrTxStatusUnknown)
+	if IsRetryable(wrapped) {
+		t.Fatal("ErrTxStatusUnknown (even wrapped) must not be retryable")
+	}
+}
+
+// Base64 XDR blobs in error text can contain "eof" by coincidence; that must
+// not classify a deterministic failure as transient.
+func TestIsRetryable_NoEofFalsePositiveInBase64(t *testing.T) {
+	err := errors.New("tx failed: AAAHeoF8cmFuZG9tYmFzZTY0") // contains "eof" lowercased
+	if IsRetryable(err) {
+		t.Fatal("base64 containing 'eof' must not be treated as a network EOF")
+	}
+	// Real EOFs still classify correctly.
+	for _, msg := range []string{"EOF", `Post "http://x": EOF`, "unexpected EOF"} {
+		if !IsRetryable(errors.New(msg)) {
+			t.Errorf("%q should be retryable", msg)
+		}
+	}
+}
+
+// Decoded XDR result-code names (what Send/AwaitTx now emit) classify too.
+func TestIsRetryable_DecodedResultCodes(t *testing.T) {
+	for _, msg := range []string{
+		"send tx rejected: TransactionResultCodeTxBadSeq",
+		"send tx rejected: TransactionResultCodeTxTooLate",
+		"send tx rejected: TransactionResultCodeTxInsufficientFee",
+		"send tx: try_again_later (queue full, not accepted)",
+	} {
+		if !IsRetryable(errors.New(msg)) {
+			t.Errorf("%q should be retryable", msg)
+		}
 	}
 }
 

@@ -34,10 +34,26 @@ sell collateral too cheaply. Raise `SLIPPAGE_BPS` only if you understand the
 pool's depth.
 
 ## Swaps / draws intermittently fail with timeout
-Public testnet RPC can be flaky. State-changing calls are intentionally **not**
-auto-retried (a re-broadcast could double-execute), so a transient failure is
-retried on the next cycle. Persistent failures usually mean a bad RPC endpoint —
-set `SOROBAN_RPC`/`HORIZON_URL` to a reliable provider.
+Public testnet RPC can be flaky. Failures **before** a transaction is accepted
+(simulation errors, `tx_bad_seq`, `try_again_later`, connection resets) are
+retried with backoff. Failures **after** acceptance are not: a
+`transaction status unknown` error means the tx was broadcast but unconfirmed —
+it may still land, so the keeper refuses to re-broadcast (a second submission
+could double-draw or double-fill) and reconciles on the next cycle via the
+stale-draw recovery instead. Persistent failures usually mean a bad RPC
+endpoint — set `SOROBAN_RPC`/`HORIZON_URL` to a reliable provider.
+
+## `transaction status unknown (sent but unconfirmed)`
+Not a config problem — the RPC node couldn't confirm the transaction within the
+await window. Check the tx hash on Stellar Expert: if it landed, the next
+cycle's stale-draw recovery squares the vault automatically; if it expired, the
+keeper simply re-evaluates the opportunity fresh.
+
+## `keeper is not registered in the KeeperRegistry` warning at startup
+The keeper checks its registration when it starts (read-only). Register and
+stake from your operator wallet, or call `k.EnsureRegistered()` once at boot —
+it is idempotent but **stakes USDC** on first registration, which is why `Run`
+never does it automatically.
 
 ## `can't find crate for core` (only when building contracts, not this SDK)
 Unrelated to the SDK — that's a Rust/wasm toolchain issue in the contracts repo.

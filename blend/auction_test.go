@@ -241,6 +241,57 @@ func TestProfitability_AuctionTypeAgnostic(t *testing.T) {
 	}
 }
 
+// A pool with no oracle at all (mock/test pools) is valued at parity: the
+// ratio degrades to a pure amount ratio instead of being unusable.
+func TestProfitability_UnpricedPool_ParityRatio(t *testing.T) {
+	pool := &PoolState{Reserves: map[string]*Reserve{
+		"XLM":  {},
+		"USDC": {},
+	}}
+	auction := Auction{
+		StartBlock: 1000,
+		Lot:        map[string]*big.Int{"XLM": makeBigInt(2_0000000)},
+		Bid:        map[string]*big.Int{"USDC": makeBigInt(1_0000000)},
+	}
+	// Fair-price block (elapsed 200): lot/bid amount ratio = 2.0.
+	got := Profitability(auction, pool, 1200)
+	if math.Abs(got-2.0) > 1e-6 {
+		t.Fatalf("unpriced pool should use parity pricing (ratio 2.0), got %f", got)
+	}
+}
+
+// When some reserves are priced but a bid asset is not, the cost is unknown —
+// the auction must evaluate to 0 (skip), never to "free money".
+func TestProfitability_UnpricedBidAsset_NeverFree(t *testing.T) {
+	pool := &PoolState{Reserves: map[string]*Reserve{
+		"XLM":   {OraclePrice: 1.0},
+		"WEIRD": {}, // no oracle price
+	}}
+	auction := Auction{
+		StartBlock: 1000,
+		Lot:        map[string]*big.Int{"XLM": makeBigInt(100_0000000)},
+		Bid:        map[string]*big.Int{"WEIRD": makeBigInt(1_0000000)},
+	}
+	if got := Profitability(auction, pool, 1200); got != 0 {
+		t.Fatalf("unpriced bid cost must yield 0 (skip), got %f", got)
+	}
+}
+
+// Same guard for a bid asset that isn't in the pool's reserve map at all.
+func TestProfitability_UnknownBidAsset_NeverFree(t *testing.T) {
+	pool := &PoolState{Reserves: map[string]*Reserve{
+		"XLM": {OraclePrice: 1.0},
+	}}
+	auction := Auction{
+		StartBlock: 1000,
+		Lot:        map[string]*big.Int{"XLM": makeBigInt(100_0000000)},
+		Bid:        map[string]*big.Int{"MYSTERY": makeBigInt(1_0000000)},
+	}
+	if got := Profitability(auction, pool, 1200); got != 0 {
+		t.Fatalf("unknown bid asset must yield 0 (skip), got %f", got)
+	}
+}
+
 func TestErrAlreadyFilled_Sentinel(t *testing.T) {
 	if ErrAlreadyFilled == nil {
 		t.Fatal("ErrAlreadyFilled should not be nil")

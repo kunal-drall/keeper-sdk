@@ -8,7 +8,10 @@
 package blend
 
 import (
+	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"time"
 
 	"github.com/stellar/go/keypair"
@@ -121,12 +124,7 @@ func (a *Adapter) Execute(rpc *soroban.Client, kp *keypair.Full, task adapters.T
 		return &adapters.Result{Block: ledger, Note: fmt.Sprintf("not profitable (%.4f < %.4f)", ratio, a.cfg.MinProfit)}, nil
 	}
 
-	bidAmt := int64(0)
-	for _, amt := range auction.Bid {
-		if amt != nil {
-			bidAmt += amt.Int64()
-		}
-	}
+	bidAmt := drawAmount(auction, pool, ledger)
 
 	res := &adapters.Result{Block: ledger, Drew: bidAmt}
 
@@ -152,7 +150,7 @@ func (a *Adapter) Execute(rpc *soroban.Client, kp *keypair.Full, task adapters.T
 				res.Note = "zero returnable proceeds — outstanding draw at slash risk"
 			}
 		}
-	case fillErr == core.ErrAlreadyFilled:
+	case errors.Is(fillErr, core.ErrAlreadyFilled):
 		// Another keeper won. We drew capital but never spent it — return it
 		// unchanged (no profit, no loss).
 		res.Note = "already filled by another keeper"
@@ -180,6 +178,53 @@ func (a *Adapter) EstimateCapital(task adapters.Task) (int64, error) {
 	return 0, nil
 }
 
+// drawAmount sizes the vault draw (7-decimal USDC stroops) for an auction's
+// bid leg. With oracle prices available it draws the bid's USD value at the
+// current Dutch decay plus a 5% buffer for drift between sizing and fill.
+// Without prices it falls back to the raw bid-token sum — only dimensionally
+// correct for USDC-denominated bids, which is what unpriced test pools use.
+func drawAmount(auction *core.Auction, pool *core.PoolState, ledger int64) int64 {
+	if pool.HasPrices() {
+		if usd := core.BidValueUSD(*auction, pool, ledger); usd > 0 {
+			v := math.Ceil(usd * 1.05 * 1e7)
+			if v >= math.MaxInt64 {
+				return math.MaxInt64
+			}
+			return int64(v)
+		}
+	}
+	var raw int64
+	for _, amt := range auction.Bid {
+		v := bigToInt64(amt)
+		if v > 0 {
+			raw = satAdd(raw, v)
+		}
+	}
+	return raw
+}
+
+// bigToInt64 converts a big.Int to int64, saturating at the int64 bounds.
+func bigToInt64(b *big.Int) int64 {
+	if b == nil {
+		return 0
+	}
+	if !b.IsInt64() {
+		if b.Sign() > 0 {
+			return math.MaxInt64
+		}
+		return math.MinInt64
+	}
+	return b.Int64()
+}
+
+// satAdd adds two non-negative int64s, saturating at MaxInt64.
+func satAdd(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
 // swapCollateral converts every non-USDC asset in the auction lot to USDC and
 // returns the total real USDC obtained. USDC already in the lot counts
 // directly; assets whose swap fails are held (excluded) rather than booked as
@@ -190,7 +235,7 @@ func (a *Adapter) swapCollateral(kp *keypair.Full, pool *core.PoolState, auction
 		if amt == nil {
 			continue
 		}
-		v := amt.Int64()
+		v := bigToInt64(amt)
 		if v <= 0 {
 			continue
 		}
@@ -227,7 +272,9 @@ func priorityFromHF(hf float64) int {
 }
 
 // oracleValueUSDC returns the Blend-oracle-implied USDC value (7-decimal
-// stroops) of amt of asset, or 0 when no price is available.
+// stroops) of amt of asset, or 0 when no price is available. A zero reference
+// disables the dex slippage floor (the swap quote's on-chain min-out still
+// applies) — fabricating a reference here would be worse than none.
 func oracleValueUSDC(pool *core.PoolState, asset string, amt int64) int64 {
 	if pool == nil {
 		return 0
@@ -236,5 +283,9 @@ func oracleValueUSDC(pool *core.PoolState, asset string, amt int64) int64 {
 	if !ok || r.OraclePrice <= 0 {
 		return 0
 	}
-	return int64(float64(amt) * r.OraclePrice)
+	v := float64(amt) * r.OraclePrice
+	if v >= math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(v)
 }

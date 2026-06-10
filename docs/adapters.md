@@ -66,17 +66,23 @@ you actually drew** — otherwise the vault books the return as cost-free profit
 
 1. **No logging, no global state.** Adapters are libraries; the `Keeper` logs from
    the `Result`.
-2. **Reads via `SimulateRead`, writes via `rpc.Invoke`.** Do not auto-retry
-   state-changing calls — a re-broadcast can double-execute.
-3. **Measured, never synthesized.** Report real on-chain outcomes (balance
+2. **Reads via `SimulateRead`, writes via `rpc.Invoke`.** Never re-broadcast a
+   transaction whose fate is unknown: `soroban.ErrTxStatusUnknown` (returned when
+   a sent transaction can't be confirmed in time) means it may still land —
+   `InvokeWithRetry` already refuses to retry it; treat it the same way in your
+   own code and let the next cycle re-evaluate instead.
+3. **Panics are contained, not free.** The keeper isolates adapter panics so one
+   buggy adapter can't kill the process, but a panicking cycle does no work —
+   return errors instead.
+4. **Measured, never synthesized.** Report real on-chain outcomes (balance
    deltas, returned amounts).
-4. **Encode with the `soroban.Scv*` builders.** `ScvAddress`, `ScvI128`,
+5. **Encode with the `soroban.Scv*` builders.** `ScvAddress`, `ScvI128`,
    `ScvU64`, `ScvSymbol`, `ScvVec`, `ScvVoid`. Soroban structs → `ScMap` keyed by
    `Symbol`; enums-with-fields → `Vec[Symbol(variant), field0, …]`; `Option::None`
    → `ScvVoid()`.
-5. **Decode** with `xdr.SafeUnmarshalBase64(sim.Results[0].XDR, &val)` then walk
+6. **Decode** with `xdr.SafeUnmarshalBase64(sim.Results[0].XDR, &val)` then walk
    the `ScVal` (`val.Vec`/`val.Map` are double pointers: `**val.Vec`).
-6. **Fail fast on auth.** If the action is role-gated, check it in `Execute` and
+7. **Fail fast on auth.** If the action is role-gated, check it in `Execute` and
    return a `Result{Note: …}` instead of submitting a doomed tx.
 
 ## Skeleton

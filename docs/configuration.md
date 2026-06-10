@@ -2,6 +2,8 @@
 
 `sdk.LoadConfig()` reads these environment variables. **Required** vars abort the
 process with a clear message if missing; the rest have testnet-friendly defaults.
+Prefer `sdk.LoadConfigFromEnv()` when embedding the SDK in a larger program — it
+returns an error instead of exiting.
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
@@ -28,4 +30,12 @@ process with a clear message if missing; the rest have testnet-friendly defaults
 - `MIN_PROFIT` is the lot-value / bid-cost ratio; 1.02 means "only fill when the
   seized collateral is worth ≥ 2% more than the capital spent."
 - Constructing `Config` directly (without `LoadConfig`) is fully supported — set
-  the struct fields yourself for tests or non-env deployments.
+  the struct fields yourself for tests or non-env deployments. `NewKeeper`
+  validates the config (`Config.Validate`) and applies production defaults to
+  unset tuning fields (`PollInterval` → 10s, `MinProfit` → 1.02), so a partial
+  struct fails fast with a clear error instead of misbehaving mid-run.
+- **Oracle prices**: when the monitored pool exposes its SEP-40 oracle via
+  `get_config`, the SDK prices every reserve from `lastprice` and uses real USD
+  values for profitability, health factors, and the swap slippage floor. Pools
+  without a reachable oracle are valued at parity (pure amount ratios) and the
+  slippage floor falls back to the DEX quote's on-chain min-out.

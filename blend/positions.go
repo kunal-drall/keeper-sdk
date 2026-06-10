@@ -112,7 +112,8 @@ func parsePositions(val xdr.ScVal, user string) *Position {
 // EstimateCapital returns an upper-bound USD estimate of the capital a
 // keeper needs to liquidate `pct`% of the position's debt. The result is
 // expressed in 7-decimal stroops (USDC). Returns 0 if the position has no
-// liabilities or pct <= 0.
+// liabilities or pct <= 0. On a fully unpriced pool assets are valued at
+// parity (see Profitability).
 func EstimateCapital(pos Position, pool *PoolState, pct int64) int64 {
 	if pct <= 0 {
 		return 0
@@ -130,14 +131,24 @@ func EstimateCapital(pos Position, pool *PoolState, pct int64) int64 {
 		if !ok {
 			continue
 		}
+		p := effectivePrice(pool, r)
+		if p <= 0 {
+			continue
+		}
 		f, _ := new(big.Float).SetInt(dAmt).Float64()
-		totalUSD += (f / scalar) * (r.DRate / scalar) * r.OraclePrice
+		totalUSD += (f / scalar) * (r.DRate / scalar) * p
 	}
 	scaled := totalUSD * float64(pct) / 100.0
 	return int64(scaled * scalar)
 }
 
 // CalcHealthFactor computes HF = Σ(collateral*price*cFactor) / Σ(liability*price/lFactor).
+//
+// Reserves that cannot be valued (no oracle price in a partially priced pool)
+// or whose liability factor is unusable are skipped: skipping a liability
+// inflates the HF, which errs on the side of NOT deploying capital against a
+// position the keeper cannot actually price. On a fully unpriced pool every
+// asset is valued at parity (see Profitability).
 func CalcHealthFactor(pos Position, pool *PoolState) float64 {
 	// build index -> reserve map
 	indexMap := make(map[uint32]*Reserve)
@@ -151,16 +162,24 @@ func CalcHealthFactor(pos Position, pool *PoolState) float64 {
 		if !ok {
 			continue
 		}
+		p := effectivePrice(pool, r)
+		if p <= 0 {
+			continue
+		}
 		f, _ := new(big.Float).SetInt(bAmt).Float64()
-		effColl += (f / scalar) * (r.BRate / scalar) * r.OraclePrice * r.CollateralFactor
+		effColl += (f / scalar) * (r.BRate / scalar) * p * r.CollateralFactor
 	}
 	for idx, dAmt := range pos.Liabilities {
 		r, ok := indexMap[idx]
 		if !ok {
 			continue
 		}
+		p := effectivePrice(pool, r)
+		if p <= 0 || r.LiabilityFactor <= 0 {
+			continue
+		}
 		f, _ := new(big.Float).SetInt(dAmt).Float64()
-		effLiab += (f / scalar) * (r.DRate / scalar) * r.OraclePrice / r.LiabilityFactor
+		effLiab += (f / scalar) * (r.DRate / scalar) * p / r.LiabilityFactor
 	}
 
 	if effLiab == 0 {

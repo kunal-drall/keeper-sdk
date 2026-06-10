@@ -33,14 +33,20 @@ export SOROSWAP_ROUTER=CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD
 ## 5. Register on-chain (once)
 A keeper must be registered (and staked) in the `KeeperRegistry` before the vault
 will let it draw capital. Register from your operator wallet (the registry pulls
-`min_stake` USDC), or use the Nectar frontend's keeper page.
+`min_stake` USDC), use the Nectar frontend's keeper page, or call
+`k.EnsureRegistered()` once at boot — it is idempotent, but note it stakes USDC
+on first registration, so the SDK never does it implicitly. An unregistered
+keeper logs a clear warning at startup instead of failing cryptically on its
+first draw.
 
 ## 6. Run
 ```sh
 go run .
 ```
 You should see `keeper starting` and, each cycle, either task activity or a quiet
-loop when there's nothing actionable. Logs are structured (`log/slog`).
+loop when there's nothing actionable. Logs are structured (`log/slog`). Ctrl-C /
+SIGTERM stops the keeper cleanly after the in-flight cycle (see the examples'
+`RunContext` + `signal.NotifyContext` pattern).
 
 ## 7. Deploy (optional)
 The keeper is a single static binary. `go build -o keeper .` and run it under any

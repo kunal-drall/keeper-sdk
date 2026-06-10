@@ -6,7 +6,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/stellar/go/keypair"
 
@@ -44,7 +49,10 @@ func main() {
 		log.Fatal(err)
 	}
 	k.AddAdapter(myAdapter{})
-	if err := k.Run(); err != nil {
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := k.RunContext(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
 }
